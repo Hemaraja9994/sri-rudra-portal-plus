@@ -6,7 +6,7 @@
   "description": "New look and Audiology/SLP clinician dashboards for the Sri Rudra admin portal, served by a Cloudflare Worker.",
   "scripts": {
     "build": "vite build && node scripts/copy-static.mjs",
-    "test": "node --test shared/clinical.test.js shared/documents.test.js",
+    "test": "node --test shared/clinical.test.js shared/documents.test.js shared/audiometry.test.js worker/categories.test.js",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },

@@ -1,5 +1,7 @@
 // Passing requests on to the admin portal, and adding the theme to its HTML pages.
 
+import { patchCategories } from './categories.js';
+
 const THEME_VERSION = '2026-11-13c';
 
 // Added to the <head> of every portal page: the app manifest and icons (so it can be installed),
@@ -64,11 +66,16 @@ function fromPortalOrigin(res, env, url) {
   return out;
 }
 
-function addTheme(res) {
+// Portal pages: swap in the clinic's collection categories (worker/categories.js), then add the theme.
+async function addTheme(res) {
+  const { html } = patchCategories(await res.text());
+  const headers = new Headers(res.headers);
+  headers.delete('content-length');
+  const patched = new Response(html, { status: res.status, statusText: res.statusText, headers });
   const themed = new HTMLRewriter()
     .on('meta[name="theme-color"]', { element(el) { el.setAttribute('content', '#173451'); } })
     .on('head', { element(el) { el.append(HEAD_TAGS, { html: true }); } })
-    .transform(res);
+    .transform(patched);
   const out = new Response(themed.body, themed);
   out.headers.delete('content-length');
   out.headers.set('cache-control', 'no-store');

@@ -5,20 +5,31 @@ import {
   AUDIOGRAM_ROWS,
   CASE_FIELDS,
   CLINIC,
-  degreeLabel,
   dmy,
+  hasAudioWeber,
+  hasTuningFork,
   isIncluded,
   protocolFor,
   ptaAverage,
+  degreeLabel,
+  earAnalysis,
 } from '../../shared/reports.js';
-import AudiogramPair from './AudiogramChart.jsx';
+import AudiogramPair, { SymbolKey } from './AudiogramChart.jsx';
+import { AudioWeberView, AudiometricSummary, CRITERIA_NOTE, TuningForkView } from './AudiometryParts.jsx';
 
-// The printable report. Hidden on screen (see clinical.css @media print); window.print() shows it.
+// Sections printed as a highlighted conclusion box.
+const KEY_SECTIONS = new Set(['impression', 'diagnosis']);
+
+// The printable A4 report. Hidden on screen (see clinical.css @media print); window.print() shows it.
+// Laid out to read well in colour and in black & white: ear symbols differ in shape, the left-ear
+// line is dashed, and nothing depends on colour alone.
 export default function ReportSheet({ tpl, report, data, patient }) {
-  const caseRows = CASE_FIELDS.filter(([k]) => data.case?.[k]);
+  const caseRows = CASE_FIELDS.filter(([k]) => String(data.case?.[k] || '').trim());
+  const sections = tpl.sections.filter((s) => isIncluded(tpl, data, s.key) && hasContent(s, data[s.key]));
+  const analysis = tpl.sections.some((s) => s.kind === 'audiogram') ? earAnalysis(tpl, data) : null;
   return (
     <div className="clin-print" aria-hidden="true">
-      <article className="rsheet">
+      <article className="rsheet rsheet--report">
         <header className="rsheet__head">
           <img className="rsheet__logo" src="/__srr/logo.jpg" alt="" />
           <div className="rsheet__id">
@@ -26,42 +37,52 @@ export default function ReportSheet({ tpl, report, data, patient }) {
             <div className="rsheet__svc">{CLINIC.services.join(' · ')}</div>
             <div className="rsheet__contact">
               {CLINIC.address.join(' ')}<br />
-              {CLINIC.phone} · {CLINIC.web}
+              {CLINIC.phone} · {CLINIC.web} · {CLINIC.hours}
             </div>
           </div>
         </header>
         <div className="rsheet__rule" />
 
-        <div className="rsheet__meta">
-          <div><b>{report.report_no}</b></div>
-          <div>Date: {dmy(report.report_date)}{report.valid_until ? ` · Valid until: ${dmy(report.valid_until)}` : ''}</div>
+        <div className="rsheet__band">
+          <h2 className="rsheet__title">{report.title}</h2>
+          <dl className="rsheet__refs">
+            <div><dt>Report no.</dt><dd>{report.report_no || '—'}</dd></div>
+            <div><dt>Date</dt><dd>{dmy(report.report_date)}</dd></div>
+            {report.valid_until && <div><dt>Valid until</dt><dd>{dmy(report.valid_until)}</dd></div>}
+            {patient?.reg_no && <div><dt>Reg. no.</dt><dd>{patient.reg_no}</dd></div>}
+          </dl>
         </div>
-        <h2 className="rsheet__title">{report.title}</h2>
 
         {caseRows.length > 0 && (
-          <table className="rsheet__case"><tbody>
+          <section className="rsheet__patient" aria-label="Patient details">
             {caseRows.map(([k, label]) => (
-              <tr key={k}><th>{label}</th><td>{data.case[k]}</td></tr>
+              <div key={k} className="rsheet__pf"><span>{label}</span><b>{data.case[k]}</b></div>
             ))}
-          </tbody></table>
+          </section>
         )}
 
-        {tpl.sections.map((s) => (isIncluded(tpl, data, s.key) && hasContent(s, data[s.key]) ? (
-          <section key={s.key} className="rsheet__sec">
-            <h3>{s.title}</h3>
-            <SectionView section={s} value={data[s.key]} />
+        {sections.map((s, n) => (
+          <section key={s.key} className={`rsheet__sec ${KEY_SECTIONS.has(s.key) ? 'rsheet__sec--key' : ''} rsheet__sec--${s.kind}`}>
+            <h3><span className="rsheet__num">{String(n + 1).padStart(2, '0')}</span>{s.title}</h3>
+            <SectionView section={s} value={data[s.key]} analysis={analysis} />
           </section>
-        ) : null))}
+        ))}
 
         <div className="rsheet__sign">
+          <div className="rsheet__signmeta">
+            <div><span>Date</span><b>{dmy(report.report_date)}</b></div>
+            <div><span>Place</span><b>Visakhapatnam</b></div>
+          </div>
           <div className="rsheet__signline">
+            <div className="rsheet__signspace" />
             <b>{report.clinician || ''}</b>
             {report.qualification && <span>{report.qualification}</span>}
             {report.rci_no && <span>RCI Reg. No. {report.rci_no}</span>}
           </div>
         </div>
         <footer className="rsheet__foot">
-          This report is based on the tests recorded above and should be read with the clinical history. Valid for medical and rehabilitative purposes only.
+          This report is based on the tests recorded above on the date of evaluation and should be read together with the clinical history.
+          The provisional diagnosis is subject to medical (ENT) correlation. Valid for medical and rehabilitative purposes only; not for medico-legal use.
         </footer>
       </article>
     </div>
@@ -73,12 +94,14 @@ function hasContent(section, value) {
     case 'fields': return value && Object.values(value).some((v) => String(v || '').trim());
     case 'table': case 'freetable': return Array.isArray(value) && value.some((r) => r.some((c) => String(c || '').trim()));
     case 'audiogram': return value && AUDIOGRAM_ROWS.some(([k]) => value[k] && Object.values(value[k]).some((v) => String(v || '').trim()));
+    case 'tuningfork': return hasTuningFork(value);
+    case 'audioweber': return hasAudioWeber(value);
     case 'list': case 'protocol': return Array.isArray(value) && value.length > 0;
     default: return String(value || '').trim().length > 0;
   }
 }
 
-function SectionView({ section, value }) {
+function SectionView({ section, value, analysis }) {
   if (section.kind === 'fields') {
     return (
       <table className="rsheet__fields"><tbody>
@@ -108,29 +131,42 @@ function SectionView({ section, value }) {
     );
   }
   if (section.kind === 'audiogram') {
+    const showRows = AUDIOGRAM_ROWS.filter(([rk]) => Object.values(value?.[rk] || {}).some((v) => String(v || '').trim()));
     return (
       <>
         <div className="rsheet__plots"><AudiogramPair value={value} /></div>
+        <div className="rsheet__keyrow"><SymbolKey /></div>
         <table className="rsheet__table rsheet__audiogram">
-          <thead><tr><th>dB HL</th>{AUDIOGRAM_FREQS.map((f) => <th key={f}>{f >= 1000 ? `${f / 1000}k` : f}</th>)}<th>PTA</th></tr></thead>
+          <thead><tr><th>Threshold (dB HL)</th>{AUDIOGRAM_FREQS.map((f) => <th key={f}>{f >= 1000 ? `${f / 1000}k` : f} Hz</th>)}<th>PTA</th></tr></thead>
           <tbody>
-            {AUDIOGRAM_ROWS.map(([rk, label]) => {
+            {showRows.map(([rk, label]) => {
               const row = value?.[rk] || {};
               const pta = ptaAverage(row);
               return (
-                <tr key={rk}><th>{label}</th>
+                <tr key={rk} className={rk.endsWith('_r') ? 'ear-r' : 'ear-l'}><th>{label}</th>
                   {AUDIOGRAM_FREQS.map((f) => <td key={f}>{row[f] ?? ''}</td>)}
-                  <td>{rk.startsWith('ac') && pta !== null ? `${pta} (${degreeLabel(pta)})` : ''}</td>
+                  <td>{pta !== null ? `${pta} (${degreeLabel(pta)})` : ''}</td>
                 </tr>
               );
             })}
           </tbody>
         </table>
+        {analysis && (analysis.right || analysis.left) && (
+          <>
+            <h4 className="rsheet__subhead">Audiometric summary</h4>
+            <AudiometricSummary right={analysis.right} left={analysis.left} print />
+            <p className="rsheet__note">{CRITERIA_NOTE} M = masked threshold; NR = no response.</p>
+          </>
+        )}
       </>
     );
   }
+  if (section.kind === 'tuningfork') return <TuningForkView value={value} />;
+  if (section.kind === 'audioweber') return <AudioWeberView value={value} />;
   if (section.kind === 'list') {
-    return <ul className="rsheet__list">{(value || []).map((i, n) => <li key={n}>{i}</li>)}</ul>;
+    return section.numbered
+      ? <ol className="rsheet__list rsheet__list--num">{(value || []).map((i, n) => <li key={n}>{i}</li>)}</ol>
+      : <ul className="rsheet__list">{(value || []).map((i, n) => <li key={n}>{i}</li>)}</ul>;
   }
   if (section.kind === 'protocol') {
     const proto = protocolFor(section.protocol);

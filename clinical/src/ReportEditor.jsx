@@ -9,10 +9,12 @@ import {
   degreeLabel,
   protocolFor,
   ptaAverage,
+  suggestAudiology,
   template,
 } from '../../shared/reports.js';
 import { api, linkTo, navigate } from './api.js';
-import AudiogramPair from './AudiogramChart.jsx';
+import AudiogramPair, { SymbolKey } from './AudiogramChart.jsx';
+import { AudioWeberEditor, AudiometricSummary, CRITERIA_NOTE, TuningForkEditor } from './AudiometryParts.jsx';
 import ReportSheet from './ReportSheet.jsx';
 import { AsyncButton, Icon, Input, Notice, Select, TextArea } from './ui.jsx';
 
@@ -82,6 +84,8 @@ export default function ReportEditor({ divisionId, id, session }) {
     setMsg('AI draft added — please read and edit it.');
   }
 
+  // Audiology: diagnosis and impression suggested from the thresholds and tests (editable).
+  const suggestion = tpl.id === 'aud_eval' ? suggestAudiology(tpl, data) : null;
   const aiKeys = tpl.sections.filter((s) => s.ai && (!s.optional || included.has(s.key))).map((s) => s.key);
 
   return (
@@ -131,7 +135,9 @@ export default function ReportEditor({ divisionId, id, session }) {
       <div className="clin-sections">
         {tpl.sections.map((s) => (
           <SectionEditor key={s.key} section={s} data={data} included={included} disabled={isFinal}
-            onToggle={toggle} onChange={setField} onDraft={s.ai ? () => draft([s.key]) : null} />
+            onToggle={toggle} onChange={setField} onDraft={s.ai ? () => draft([s.key]) : null}
+            suggestion={suggestion && ['diagnosis', 'impression'].includes(s.key) ? suggestion : null}
+            analysis={suggestion && s.kind === 'audiogram' ? suggestion : null} />
         ))}
       </div>
 
@@ -175,7 +181,7 @@ function Field({ label, children }) {
 }
 
 // Renders one section for editing, by kind.
-function SectionEditor({ section, data, included, disabled, onToggle, onChange, onDraft }) {
+function SectionEditor({ section, data, included, disabled, onToggle, onChange, onDraft, suggestion, analysis }) {
   const on = !section.optional || included.has(section.key);
   const value = data[section.key];
 
@@ -202,6 +208,7 @@ function SectionEditor({ section, data, included, disabled, onToggle, onChange, 
     <section className="card clin-sec">
       {header}
       {section.hint && <p className="clin-sec__hint">{section.hint}</p>}
+      {suggestion && <Suggestion section={section} suggestion={suggestion} value={value} disabled={disabled} onChange={onChange} />}
       <div className="clin-sec__body">
         {section.kind === 'fields' && (
           <div className="clin-fieldgrid">
@@ -240,7 +247,15 @@ function SectionEditor({ section, data, included, disabled, onToggle, onChange, 
         )}
 
         {section.kind === 'audiogram' && (
-          <Audiogram section={section} value={value} disabled={disabled} onChange={onChange} />
+          <Audiogram section={section} value={value} disabled={disabled} onChange={onChange} analysis={analysis} />
+        )}
+
+        {section.kind === 'tuningfork' && (
+          <TuningForkEditor value={value} disabled={disabled} onChange={(v) => onChange((d) => { d[section.key] = v; })} />
+        )}
+
+        {section.kind === 'audioweber' && (
+          <AudioWeberEditor value={value} disabled={disabled} onChange={(v) => onChange((d) => { d[section.key] = v; })} />
         )}
 
         {section.kind === 'narrative' && (
@@ -283,7 +298,7 @@ function FreeTable({ section, value, disabled, onChange }) {
   );
 }
 
-function Audiogram({ section, value, disabled, onChange }) {
+function Audiogram({ section, value, disabled, onChange, analysis }) {
   const set = (rowKey, freq, v) => onChange((d) => { d[section.key] = { ...d[section.key], [rowKey]: { ...(d[section.key]?.[rowKey] || {}), [freq]: v } }; });
   return (
     <div className="clin-tablewrap">
@@ -298,7 +313,7 @@ function Audiogram({ section, value, disabled, onChange }) {
               <tr key={rk}>
                 <th scope="row">{label}</th>
                 {AUDIOGRAM_FREQS.map((f) => (
-                  <td key={f}><input className="clin-dbcell" inputMode="numeric" value={row[f] ?? ''} disabled={disabled} onChange={(e) => set(rk, f, e.target.value)} /></td>
+                  <td key={f}><input className="clin-dbcell" autoCapitalize="characters" spellCheck={false} value={row[f] ?? ''} disabled={disabled} onChange={(e) => set(rk, f, e.target.value)} /></td>
                 ))}
                 <td className="clin-pta">{isAir && pta !== null ? <span title={degreeLabel(pta)}>{pta}</span> : ''}</td>
               </tr>
@@ -306,8 +321,15 @@ function Audiogram({ section, value, disabled, onChange }) {
           })}
         </tbody>
       </table>
-      <p className="clin-sec__hint">PTA = average of 500, 1000, 2000, 4000 Hz. Enter NR for no response. Right ◯ air / &lt; bone, Left ✕ air / &gt; bone.</p>
       <AudiogramPair value={value} />
+      <SymbolKey />
+      {analysis && (analysis.right || analysis.left) && (
+        <div className="clin-tablewrap clin-summarywrap">
+          <h4 className="clin-subhead">Audiometric summary</h4>
+          <AudiometricSummary right={analysis.right} left={analysis.left} />
+          <p className="clin-sec__hint">{CRITERIA_NOTE}</p>
+        </div>
+      )}
     </div>
   );
 }
@@ -330,6 +352,47 @@ function Protocol({ section, value, disabled, onChange }) {
           ))}
         </div>
       ))}
+    </div>
+  );
+}
+
+// The suggestion worked out from the thresholds and tests, with buttons to put it into the section.
+// The clinician can then edit the text freely; nothing is filled in without a click.
+function Suggestion({ section, suggestion, value, disabled, onChange }) {
+  const isFields = section.kind === 'fields';
+  const lines = isFields
+    ? section.fields.map(([k, label]) => [k, label, suggestion.diagnosis[k] || '']).filter(([, , t]) => t)
+    : (suggestion.impression ? [['impression', '', suggestion.impression]] : []);
+  if (!lines.length) {
+    return <div className="clin-suggest clin-suggest--empty">Enter the audiogram thresholds (or the PTA in the core table) to get a suggested {isFields ? 'diagnosis' : 'impression'}.</div>;
+  }
+  const current = isFields ? value || {} : { impression: value || '' };
+  const filled = lines.some(([k]) => String(current[k] || '').trim());
+  const differs = lines.some(([k, , t]) => String(current[k] || '').trim() !== t);
+  const put = (onlyEmpty) => onChange((d) => {
+    if (!isFields) { d[section.key] = lines[0][2]; return; }
+    const next = { ...d[section.key] };
+    for (const [k, , t] of lines) if (!onlyEmpty || !String(next[k] || '').trim()) next[k] = t;
+    d[section.key] = next;
+  });
+  return (
+    <div className="clin-suggest">
+      <div className="clin-suggest__head"><Icon name="chart" size={15} /><span>Suggested from the test results</span></div>
+      {isFields
+        ? <dl className="clin-suggest__lines">{lines.map(([k, label, t]) => <React.Fragment key={k}><dt>{label}</dt><dd>{t}</dd></React.Fragment>)}</dl>
+        : <p className="clin-suggest__text">{lines[0][2]}</p>}
+      {!disabled && differs && (
+        <div className="clin-suggest__tools">
+          <button type="button" className="btn btn--secondary btn--sm" onClick={() => {
+            if (filled && !window.confirm('Replace what is written now with the suggestion?')) return;
+            put(false);
+          }}><Icon name="check" size={14} />{filled ? 'Replace with suggestion' : 'Use suggestion'}</button>
+          {isFields && filled && lines.some(([k]) => !String(current[k] || '').trim()) && (
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => put(true)}><Icon name="plus" size={14} />Fill empty fields only</button>
+          )}
+          <span className="clin-suggest__note">You can edit the text after using it.</span>
+        </div>
+      )}
     </div>
   );
 }

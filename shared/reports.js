@@ -6,7 +6,9 @@
 //   fields     label/value rows                          data[key] = { fieldKey: text }
 //   table      fixed row labels x columns               data[key] = [[cell, cell], ...]  (one array per row)
 //   freetable  clinician adds rows (first column typed)  data[key] = [[cell, cell, ...], ...]
-//   audiogram  pure-tone thresholds, PTA worked out      data[key] = { ac_r: {250: '20', ...}, ... }
+//   audiogram  pure-tone thresholds, PTA worked out      data[key] = { ac_r: {250: '20', 500: '45M', ...}, ... }
+//   tuningfork Rinne / Weber / ABC with fork frequency      data[key] = { freq, rinne_r, rinne_l, weber, abc_r, abc_l, note }
+//   audioweber audiometric Weber, result per frequency     data[key] = { 250: 'right', 500: 'midline', ..., note }
 //   narrative  paragraph text (AI can draft)             data[key] = 'text'
 //   list       one item per line (AI can draft)          data[key] = ['item', ...]
 //   protocol   a standard-of-care checklist (ASHA)       data[key] = ['step id', ...]  (ticked steps)
@@ -14,7 +16,30 @@
 // A section marked `optional: true` can be left out of a report: the clinician includes only the
 // tests that were done. data.included is the set of optional section keys that are in the report.
 
-import { DEGREES, addDays, isIsoDate, labelOf } from './clinical.js';
+import { addDays, isIsoDate } from './clinical.js';
+import {
+  AUDIOGRAM_FREQS,
+  AUDIOGRAM_ROWS,
+  analyseEar,
+  audioWeberFrom,
+  audioWeberSentence,
+  degreeFor,
+  degreeLabel,
+  describeEar,
+  diagnosisLines,
+  hasAudioWeber,
+  hasThresholds,
+  hasTuningFork,
+  optionText,
+  ptaAverage,
+  RINNE_RESULTS,
+  ABC_RESULTS,
+  WEBER_RESULTS,
+  tuningForkFrom,
+  tuningForkSentence,
+} from './audiometry.js';
+
+export { AUDIOGRAM_FREQS, AUDIOGRAM_ROWS, degreeFor, degreeLabel, ptaAverage };
 
 // Letterhead, exactly as on the clinic's printed reports.
 export const CLINIC = {
@@ -45,7 +70,7 @@ const complaints = { key: 'complaints', title: 'Brief complaint', kind: 'list', 
 const diagnosis = { key: 'diagnosis', title: 'Provisional diagnosis', kind: 'narrative', ai: true };
 const recommendations = { key: 'recommendations', title: 'Recommendations', kind: 'list', numbered: true, ai: true, hint: 'One recommendation per line. Common: ENT review, HAT & fitting, follow-up.' };
 // Audiology reports give the provisional diagnosis per ear, as the clinic writes it.
-const audDiagnosis = { key: 'diagnosis', title: 'Provisional diagnosis', kind: 'fields', fields: [['right', 'Right ear'], ['left', 'Left ear'], ['both', 'Both ears / overall']] };
+const audDiagnosis = { key: 'diagnosis', title: 'Provisional diagnosis', kind: 'fields', fields: [['right', 'Right ear', 'textarea'], ['left', 'Left ear', 'textarea'], ['both', 'Both ears / overall', 'textarea']] };
 const RL = ['Right', 'Left'];
 
 // ---------- the templates ----------
@@ -70,10 +95,11 @@ export const TEMPLATES = [
         ['family', 'Family history'], ['medical', 'Medical history'], ['aids', 'Hearing aid use'],
       ] },
       { key: 'otoscopy', title: 'Otoscopic examination', kind: 'table', optional: true, columns: ['Findings'], rows: ['Right ear', 'Left ear'] },
-      { key: 'tuningfork', title: 'Tuning fork tests', kind: 'table', optional: true, columns: RL, rows: ['Rinne', 'Weber', 'Absolute bone conduction (ABC)'] },
+      { key: 'tuningfork', title: 'Tuning fork tests', kind: 'tuningfork', optional: true, hint: 'Rinne, Weber and absolute bone conduction (ABC) with the fork frequency used.' },
       // Core result table, exactly as the clinic reports it.
       { key: 'pta_speech', title: 'Pure-tone & speech audiometry', kind: 'table', columns: RL, rows: ['PTA (dB HL)', 'SRT (dB HL)', 'SDS (%)'] },
-      { key: 'audiogram', title: 'Detailed audiogram (thresholds)', kind: 'audiogram', optional: true, hint: 'Air and bone thresholds in dB HL, with masking (BSA). PTA is the average of 500, 1000, 2000 and 4000 Hz; degree follows Clark (1981).' },
+      { key: 'audiogram', title: 'Pure-tone audiogram', kind: 'audiogram', optional: true, hint: 'Air and bone thresholds in dB HL. Type M after a masked threshold (45M), NR for no response (or 110NR). PTA is the average of 500, 1000, 2000 and 4000 Hz; degree follows Clark (1981).' },
+      { key: 'audio_weber', title: 'Audiometric Weber test', kind: 'audioweber', optional: true, hint: 'Bone vibrator on the forehead; where the tone is heard at each frequency.' },
       { key: 'pta_notes', title: 'Audiogram interpretation', kind: 'narrative', optional: true, ai: true, hint: 'Type, degree and configuration of loss per ear; masking used (BSA descriptors).' },
       // Immittance as the clinic writes it: an impression per ear. Detailed values are optional.
       { key: 'immittance', title: 'Immittance audiometry', kind: 'fields', fields: [
@@ -357,38 +383,6 @@ export function aiSectionKeys(tpl) {
   return tpl.sections.filter((s) => s.ai).map((s) => s.key);
 }
 
-// ---------- audiogram ----------
-
-export const AUDIOGRAM_FREQS = [250, 500, 1000, 2000, 4000, 8000];
-export const AUDIOGRAM_ROWS = [['ac_r', 'AC Right'], ['ac_l', 'AC Left'], ['bc_r', 'BC Right'], ['bc_l', 'BC Left']];
-const PTA_FREQS = [500, 1000, 2000, 4000];
-
-// Average of 500, 1000, 2000 and 4000 Hz (needs all four), rounded to one decimal.
-export function ptaAverage(row) {
-  if (!row) return null;
-  const values = PTA_FREQS.map((f) => row[f]);
-  if (values.some((v) => v === undefined || v === null || String(v).trim() === '' || !Number.isFinite(Number(v)))) return null;
-  const avg = values.reduce((sum, v) => sum + Number(v), 0) / values.length;
-  return Math.round(avg * 10) / 10;
-}
-
-// Degree of hearing loss for a PTA (Clark, 1981): returns an id from DEGREES.
-export function degreeFor(pta) {
-  if (pta === null || pta === undefined || !Number.isFinite(pta)) return null;
-  if (pta <= 15) return 'normal';
-  if (pta <= 25) return 'minimal';
-  if (pta <= 40) return 'mild';
-  if (pta <= 55) return 'moderate';
-  if (pta <= 70) return 'mod_severe';
-  if (pta <= 90) return 'severe';
-  return 'profound';
-}
-
-export function degreeLabel(pta) {
-  const id = degreeFor(pta);
-  return id ? labelOf(DEGREES, id).replace(/\s*\(.*\)$/, '') : '';
-}
-
 // ---------- numbering and dates ----------
 
 const MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -426,6 +420,8 @@ function blankSection(section) {
     case 'table': return section.rows.map(() => section.columns.map(() => ''));
     case 'freetable': return Array.from({ length: section.minRows || 3 }, () => section.columns.map(() => ''));
     case 'audiogram': return Object.fromEntries(AUDIOGRAM_ROWS.map(([k]) => [k, {}]));
+    case 'tuningfork': return tuningForkFrom(null);
+    case 'audioweber': return {};
     case 'list':
     case 'protocol': return [];
     default: return '';
@@ -473,6 +469,8 @@ function cleanSection(section, value) {
         return [k, Object.fromEntries(AUDIOGRAM_FREQS.map((f) => [f, text(row[f], 8)]).filter(([, x]) => x !== ''))];
       }));
     }
+    case 'tuningfork': return tuningForkFrom(value);
+    case 'audioweber': return audioWeberFrom(value);
     case 'list': {
       const items = Array.isArray(value) ? value : String(value ?? '').split('\n');
       return items.map((i) => text(i, 1200).trim()).filter(Boolean).slice(0, 60);
@@ -521,6 +519,20 @@ export function reportAsText(tpl, data) {
         const pta = ptaAverage(row);
         return `- ${label}: ${cells.join(', ')}${pta !== null ? ` (PTA ${pta} dB HL, ${degreeLabel(pta)})` : ''}`;
       }).filter(Boolean).join('\n');
+    } else if (s.kind === 'tuningfork') {
+      const tf = tuningForkFrom(v);
+      body = [
+        tf.freq && `- Fork: ${tf.freq} Hz`,
+        tf.rinne_r && `- Rinne right: ${optionText(RINNE_RESULTS, tf.rinne_r)}`,
+        tf.rinne_l && `- Rinne left: ${optionText(RINNE_RESULTS, tf.rinne_l)}`,
+        tf.weber && `- Weber: ${optionText(WEBER_RESULTS, tf.weber)}`,
+        tf.abc_r && `- ABC right: ${optionText(ABC_RESULTS, tf.abc_r)}`,
+        tf.abc_l && `- ABC left: ${optionText(ABC_RESULTS, tf.abc_l)}`,
+        tf.note && `- Note: ${tf.note}`,
+      ].filter(Boolean).join('\n');
+    } else if (s.kind === 'audioweber') {
+      const aw = audioWeberFrom(v);
+      body = [audioWeberSentence(aw), aw.note].filter(Boolean).map((x) => `- ${x}`).join('\n');
     } else if (s.kind === 'list') body = (v || []).map((i) => `- ${i}`).join('\n');
     else body = v || '';
     if (body) lines.push(`\n## ${s.title}\n${body}`);
@@ -547,3 +559,49 @@ export function newReportDefaults(today) {
 }
 
 export { addDays };
+
+// ---------- suggestions from the test results (audiology) ----------
+
+// Per-ear analysis from the audiogram (if it is in the report), else from the PTA in the core table
+// (degree only: the type of loss needs bone conduction).
+export function earAnalysis(tpl, data) {
+  const audiogram = tpl.sections.some((s) => s.kind === 'audiogram') && isIncluded(tpl, data, 'audiogram') ? data.audiogram : null;
+  const fromTable = (col) => {
+    const row = tpl.sections.find((s) => s.key === 'pta_speech')?.rows.findIndex((r) => r.startsWith('PTA'));
+    const raw = row >= 0 ? String(data.pta_speech?.[row]?.[col] ?? '').trim() : '';
+    const pta = raw && Number.isFinite(Number(raw)) ? Number(raw) : null;
+    if (pta === null) return null;
+    const degree = degreeFor(pta);
+    return { pta, degree, degreeText: degreeLabel(pta), bcPta: null, bcMean: null, abg: null, type: degree === 'normal' ? 'normal' : 'unknown', config: null, fromTable: true };
+  };
+  const ear = (acKey, bcKey, col) => (audiogram && hasThresholds(audiogram[acKey]) ? analyseEar(audiogram[acKey], audiogram[bcKey]) : null) || fromTable(col);
+  return { right: ear('ac_r', 'bc_r', 0), left: ear('ac_l', 'bc_l', 1) };
+}
+
+// Suggested provisional diagnosis (per ear and overall) and audiological impression, worked out from
+// the thresholds and the tests in the report. Only a suggestion: the clinician edits and confirms.
+export function suggestAudiology(tpl, data) {
+  const { right, left } = earAnalysis(tpl, data);
+  const diagnosis = diagnosisLines(right, left);
+  const lines = [];
+  if (right || left) {
+    const ear = (a, side) => a && `${lower(describeEar(a))} in the ${side} ear`;
+    lines.push(`Pure-tone audiometry indicates ${[ear(right, 'right'), ear(left, 'left')].filter(Boolean).join(', and ')}.`);
+  }
+  if (isIncluded(tpl, data, 'tuningfork')) lines.push(tuningForkSentence(tuningForkFrom(data.tuningfork)));
+  if (isIncluded(tpl, data, 'audio_weber')) lines.push(audioWeberSentence(audioWeberFrom(data.audio_weber)));
+  const imm = data.immittance || {};
+  if (String(imm.right || '').trim() || String(imm.left || '').trim()) {
+    lines.push(`Immittance audiometry: ${[imm.right && `right ear — ${trimStop(imm.right)}`, imm.left && `left ear — ${trimStop(imm.left)}`].filter(Boolean).join('; ')}.`);
+  }
+  const oae = data.oae || {};
+  if (isIncluded(tpl, data, 'oae') && (String(oae.right || '').trim() || String(oae.left || '').trim())) {
+    lines.push(`OAE: ${[oae.right && `right ear — ${trimStop(oae.right)}`, oae.left && `left ear — ${trimStop(oae.left)}`].filter(Boolean).join('; ')}.`);
+  }
+  return { diagnosis, impression: lines.filter(Boolean).join(' '), right, left };
+}
+
+const lower = (s) => (s ? s.charAt(0).toLowerCase() + s.slice(1) : s);
+const trimStop = (s) => String(s).trim().replace(/[.\s]+$/, '');
+
+export { hasAudioWeber, hasTuningFork };

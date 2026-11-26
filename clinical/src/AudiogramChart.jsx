@@ -1,83 +1,169 @@
 import React from 'react';
 
-import { AUDIOGRAM_FREQS, ptaAverage, degreeLabel } from '../../shared/reports.js';
+import { AUDIOGRAM_FREQS, degreeLabel, parseThreshold, ptaAverage } from '../../shared/audiometry.js';
 
-// A standard audiogram plot for one ear: frequency (octaves) across, hearing level (dB HL) down.
-// Red / right-ear symbols O (air) and < (bone); blue / left-ear symbols X (air) and > (bone).
-// Right and left are drawn as separate charts (see AudiogramPair), as on a clinical audiogram.
+// A clinical audiogram for one ear (right and left are separate charts, as on a clinical audiogram).
+// Frequency in octaves across the top, hearing level (dB HL) down; one octave is drawn the same
+// length as 20 dB (ASHA, 1990). Symbols follow ASHA (1990):
+//   right  O air, Δ air masked, < bone, [ bone masked      (red, solid line)
+//   left   X air, □ air masked, > bone, ] bone masked      (blue, dashed line, so it also reads in black & white)
+//   no response: the symbol with an arrow pointing down and away from the other ear.
+// Degree bands in the background follow Clark (1981), the same scale as the PTA degree.
 const FREQS = AUDIOGRAM_FREQS;            // 250, 500, 1000, 2000, 4000, 8000
 const DB_MIN = -10;
 const DB_MAX = 120;
-const W = 250;
-const H = 270;
-const L = 30;
-const R = 8;
-const T = 16;
-const B = 30;
+const L = 34;
+const R = 58;
+const T = 26;
+const B = 14;
+const PW = 210;                                          // plot width: 5 octaves
+const PH = PW * ((DB_MAX - DB_MIN) / 20) / (FREQS.length - 1); // 1 octave = 20 dB
+const W = L + PW + R;
+const H = T + PH + B;
 
-const fx = (i) => L + (i / (FREQS.length - 1)) * (W - L - R);
-const fy = (db) => T + ((db - DB_MIN) / (DB_MAX - DB_MIN)) * (H - T - B);
+const BANDS = [
+  [-10, 15, 'Normal'],
+  [15, 25, 'Minimal'],
+  [25, 40, 'Mild'],
+  [40, 55, 'Moderate'],
+  [55, 70, 'Mod. severe'],
+  [70, 90, 'Severe'],
+  [90, 120, 'Profound'],
+];
+
+export const EAR_COLOR = { right: '#c0392b', left: '#1f5fa8' };
+
+const fx = (i) => L + (i / (FREQS.length - 1)) * PW;
+const fy = (db) => T + ((Math.min(DB_MAX, Math.max(DB_MIN, db)) - DB_MIN) / (DB_MAX - DB_MIN)) * PH;
 const freqLabel = (f) => (f >= 1000 ? `${f / 1000}k` : `${f}`);
 
-function num(v) {
-  const s = String(v ?? '').trim();
-  if (!s || /^(nr|cnt|dne|no response)$/i.test(s)) return { nr: /^(nr|cnt|dne|no response)$/i.test(s) };
-  const n = Number(s);
-  return Number.isFinite(n) ? { db: n } : {};
-}
-
 function points(row) {
-  return FREQS.map((f, i) => ({ i, f, ...num(row?.[f]) }));
+  return FREQS.map((f, i) => {
+    const t = parseThreshold(row?.[f]);
+    if (t.db === undefined && !t.nr) return { i, f };
+    return { i, f, db: t.db ?? DB_MAX, masked: !!t.masked, nr: !!t.nr };
+  });
 }
 
-// air-conduction symbol (O right / X left), bone-conduction symbol (< right / > left)
-function Symbol({ cx, cy, ear, air }) {
-  const c = ear === 'right' ? '#c0392b' : '#1f5fa8';
+// One audiogram symbol, centred on (cx, cy).
+export function Symbol({ cx, cy, ear, air, masked, nr, color }) {
+  const c = color || EAR_COLOR[ear];
+  const sw = 1.6;
+  let mark;
   if (air) {
-    return ear === 'right'
-      ? <circle cx={cx} cy={cy} r="5.5" fill="none" stroke={c} strokeWidth="1.6" />
-      : <g stroke={c} strokeWidth="1.8"><line x1={cx - 5} y1={cy - 5} x2={cx + 5} y2={cy + 5} /><line x1={cx + 5} y1={cy - 5} x2={cx - 5} y2={cy + 5} /></g>;
+    if (ear === 'right') {
+      mark = masked
+        ? <path d={`M${cx},${cy - 6} L${cx + 6},${cy + 4.5} L${cx - 6},${cy + 4.5} Z`} fill="#fff" stroke={c} strokeWidth={sw} />
+        : <circle cx={cx} cy={cy} r="5.2" fill="#fff" stroke={c} strokeWidth={sw} />;
+    } else {
+      mark = masked
+        ? <rect x={cx - 5} y={cy - 5} width="10" height="10" fill="#fff" stroke={c} strokeWidth={sw} />
+        : <g stroke={c} strokeWidth="1.8"><line x1={cx - 4.6} y1={cy - 4.6} x2={cx + 4.6} y2={cy + 4.6} /><line x1={cx + 4.6} y1={cy - 4.6} x2={cx - 4.6} y2={cy + 4.6} /></g>;
+    }
+  } else if (masked) {
+    mark = ear === 'right'
+      ? <path d={`M${cx + 3},${cy - 6} L${cx - 2},${cy - 6} L${cx - 2},${cy + 6} L${cx + 3},${cy + 6}`} fill="none" stroke={c} strokeWidth={sw} />
+      : <path d={`M${cx - 3},${cy - 6} L${cx + 2},${cy - 6} L${cx + 2},${cy + 6} L${cx - 3},${cy + 6}`} fill="none" stroke={c} strokeWidth={sw} />;
+  } else {
+    mark = ear === 'right'
+      ? <path d={`M${cx + 3.5},${cy - 5} L${cx - 3.5},${cy} L${cx + 3.5},${cy + 5}`} fill="none" stroke={c} strokeWidth={sw} />
+      : <path d={`M${cx - 3.5},${cy - 5} L${cx + 3.5},${cy} L${cx - 3.5},${cy + 5}`} fill="none" stroke={c} strokeWidth={sw} />;
   }
-  const d = ear === 'right' ? `M${cx + 4},${cy - 5} L${cx - 4},${cy} L${cx + 4},${cy + 5}` : `M${cx - 4},${cy - 5} L${cx + 4},${cy} L${cx - 4},${cy + 5}`;
-  return <path d={d} fill="none" stroke={c} strokeWidth="1.6" />;
+  if (!nr) return mark;
+  // arrow down and away from the other ear: right ear down-left, left ear down-right
+  const dir = ear === 'right' ? -1 : 1;
+  const x1 = cx + dir * 4;
+  const y1 = cy + 4;
+  const x2 = cx + dir * 11;
+  const y2 = cy + 11;
+  return (
+    <g>
+      {mark}
+      <line x1={x1} y1={y1} x2={x2} y2={y2} stroke={c} strokeWidth="1.3" />
+      <path d={`M${x2 - dir * 4.5},${y2} L${x2},${y2} L${x2},${y2 - 4.5}`} fill="none" stroke={c} strokeWidth="1.3" />
+    </g>
+  );
 }
 
 export function AudiogramChart({ ear, ac, bc }) {
-  const color = ear === 'right' ? '#c0392b' : '#1f5fa8';
+  const color = EAR_COLOR[ear];
   const acPts = points(ac);
   const bcPts = points(bc);
-  const line = acPts.filter((p) => p.db != null);
+  const line = acPts.filter((p) => p.db != null && !p.nr);
   const pta = ptaAverage(ac);
+  const bcShift = ear === 'right' ? -8 : 8;
   return (
-    <figure className="clin-audio">
-      <figcaption style={{ color }}>{ear === 'right' ? 'Right ear' : 'Left ear'}{pta !== null ? ` — PTA ${pta} dB HL (${degreeLabel(pta)})` : ''}</figcaption>
+    <figure className={`clin-audio clin-audio--${ear}`}>
+      <figcaption>
+        <span className="clin-audio__ear" style={{ color }}>{ear === 'right' ? 'Right ear' : 'Left ear'}</span>
+        {pta !== null && <span className="clin-audio__pta">PTA {pta} dB HL · {degreeLabel(pta)}</span>}
+      </figcaption>
       <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={`${ear} ear audiogram`} className="clin-audio__svg">
-        {/* dB gridlines + labels */}
-        {Array.from({ length: (DB_MAX - DB_MIN) / 20 + 1 }, (_, k) => DB_MIN + k * 20).map((db) => (
-          <g key={db}>
-            <line x1={L} y1={fy(db)} x2={W - R} y2={fy(db)} stroke={db === 20 ? '#9aa7b4' : '#e2e8ef'} strokeWidth={db === 20 ? 1 : 0.8} strokeDasharray={db === 20 ? '3 2' : ''} />
-            <text x={L - 4} y={fy(db) + 3} textAnchor="end" fontSize="8" fill="#64748b">{db}</text>
+        {/* degree bands (Clark, 1981) */}
+        {BANDS.map(([a, b, label], k) => (
+          <g key={label}>
+            <rect x={L} y={fy(a)} width={PW} height={fy(b) - fy(a)} fill={k % 2 ? '#f3f6fa' : '#ffffff'} />
+            <text x={L + PW + 5} y={(fy(a) + fy(b)) / 2 + 2.6} fontSize="7.2" fill="#64748b">{label}</text>
           </g>
         ))}
-        {/* frequency gridlines + labels */}
+        {/* dB gridlines every 10 dB, labelled */}
+        {Array.from({ length: (DB_MAX - DB_MIN) / 10 + 1 }, (_, k) => DB_MIN + k * 10).map((db) => (
+          <g key={db}>
+            <line x1={L} y1={fy(db)} x2={L + PW} y2={fy(db)} stroke={db === 0 ? '#7b8794' : '#d5dde6'} strokeWidth={db === 0 ? 0.9 : 0.6} />
+            <text x={L - 5} y={fy(db) + 2.6} textAnchor="end" fontSize="7.4" fill="#475569">{db}</text>
+          </g>
+        ))}
+        {/* frequency gridlines, labelled along the top */}
         {FREQS.map((f, i) => (
           <g key={f}>
-            <line x1={fx(i)} y1={T} x2={fx(i)} y2={H - B} stroke="#e2e8ef" strokeWidth="0.8" />
-            <text x={fx(i)} y={H - B + 12} textAnchor="middle" fontSize="8" fill="#64748b">{freqLabel(f)}</text>
+            <line x1={fx(i)} y1={T} x2={fx(i)} y2={T + PH} stroke="#d5dde6" strokeWidth="0.6" />
+            <text x={fx(i)} y={T - 6} textAnchor="middle" fontSize="7.6" fill="#475569" fontWeight="600">{freqLabel(f)}</text>
           </g>
         ))}
-        <text x={(L + W - R) / 2} y={H - 4} textAnchor="middle" fontSize="7.5" fill="#94a3b8">Frequency (Hz)</text>
-        {/* AC connecting line */}
-        {line.length > 1 && <polyline points={line.map((p) => `${fx(p.i)},${fy(p.db)}`).join(' ')} fill="none" stroke={color} strokeWidth="1.3" />}
-        {/* bone then air symbols */}
-        {bcPts.filter((p) => p.db != null).map((p) => <Symbol key={`b${p.f}`} cx={fx(p.i) + (ear === 'right' ? -7 : 7)} cy={fy(p.db)} ear={ear} air={false} />)}
-        {acPts.filter((p) => p.db != null).map((p) => <Symbol key={`a${p.f}`} cx={fx(p.i)} cy={fy(p.db)} ear={ear} air />)}
-        {/* NR markers (air) */}
-        {acPts.filter((p) => p.nr).map((p) => (
-          <text key={`nr${p.f}`} x={fx(p.i)} y={fy(DB_MAX) - 2} textAnchor="middle" fontSize="7" fill={color}>NR</text>
+        <rect x={L} y={T} width={PW} height={PH} fill="none" stroke="#94a3b8" strokeWidth="0.9" />
+        <text x={L + PW / 2} y={9} textAnchor="middle" fontSize="7" fill="#64748b" letterSpacing="0.4">FREQUENCY (Hz)</text>
+        <text transform={`translate(9 ${T + PH / 2}) rotate(-90)`} textAnchor="middle" fontSize="7" fill="#64748b" letterSpacing="0.4">HEARING LEVEL (dB HL)</text>
+        {/* air-conduction line: right solid, left dashed */}
+        {line.length > 1 && (
+          <polyline points={line.map((p) => `${fx(p.i)},${fy(p.db)}`).join(' ')} fill="none" stroke={color} strokeWidth="1.4"
+            strokeDasharray={ear === 'left' ? '4 2.5' : ''} strokeLinejoin="round" />
+        )}
+        {/* bone, then air symbols */}
+        {bcPts.filter((p) => p.db != null).map((p) => (
+          <Symbol key={`b${p.f}`} cx={fx(p.i) + bcShift} cy={fy(p.db)} ear={ear} air={false} masked={p.masked} nr={p.nr} />
+        ))}
+        {acPts.filter((p) => p.db != null).map((p) => (
+          <Symbol key={`a${p.f}`} cx={fx(p.i)} cy={fy(p.db)} ear={ear} air masked={p.masked} nr={p.nr} />
         ))}
       </svg>
     </figure>
+  );
+}
+
+// The symbol key printed under the charts.
+export function SymbolKey() {
+  const cells = [
+    ['Air', { air: true }],
+    ['Air, masked', { air: true, masked: true }],
+    ['Bone', { air: false }],
+    ['Bone, masked', { air: false, masked: true }],
+    ['No response', { air: true, nr: true }],
+  ];
+  const mini = (ear, props) => (
+    <svg viewBox="-12 -9 24 22" width="22" height="20" aria-hidden="true"><Symbol cx={0} cy={0} ear={ear} {...props} /></svg>
+  );
+  return (
+    <table className="clin-symkey" aria-label="Audiogram symbol key">
+      <thead><tr><th />{cells.map(([label]) => <th key={label}>{label}</th>)}</tr></thead>
+      <tbody>
+        {['right', 'left'].map((ear) => (
+          <tr key={ear}>
+            <th style={{ color: EAR_COLOR[ear] }}>{ear === 'right' ? 'Right' : 'Left'}</th>
+            {cells.map(([label, props]) => <td key={label}>{mini(ear, props)}</td>)}
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }
 

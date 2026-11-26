@@ -31,7 +31,7 @@ import {
   weeksFor,
 } from './plans.js';
 
-const KINDS = ['fields', 'table', 'freetable', 'audiogram', 'narrative', 'list', 'protocol'];
+const KINDS = ['fields', 'table', 'freetable', 'audiogram', 'tuningfork', 'audioweber', 'narrative', 'list', 'protocol'];
 
 test('every template is well formed', () => {
   assert.deepEqual(templatesFor('audiology').map((t) => t.id), ['aud_eval']);
