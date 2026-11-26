@@ -1,5 +1,9 @@
 # Sri Rudra portal-plus
 
+> Repository: `Hemaraja9994/sri-rudra-portal-plus` (renamed from `sri-rudra-admin-` on 26 Nov 2026).
+> Not to be confused with `sri-rudra-admin` (no dash), which deploys the public website
+> (`sri-rudra-speech-hearing-clinic`) and is linked to the original portal's Pages project.
+
 A new look and **clinician dashboards (Audiology and Speech-Language Pathology)** for the Sri Rudra
 admin portal at admin.srirudraspeechandhearing.com, added **without changing the portal's own code**.
 
@@ -67,6 +71,13 @@ the iPhone steps), `install.html` (served at `/install`), `sw.js` (served at `/s
 
 The service worker caches only the "No internet connection" page. Portal pages and patient data are
 never stored on the device. To switch it off for everyone, follow the comment at the top of `sw.js`.
+
+## Collection categories
+
+The portal's Collections page has its category list built in. The Worker swaps it for the list in
+`worker/categories.js` as the page passes through (one entry per test or item). Never remove or
+rename an id already in use; if the portal is redeployed with a different built-in list, the swap
+simply does not happen.
 
 ## Reports, therapy plans and AI records
 
